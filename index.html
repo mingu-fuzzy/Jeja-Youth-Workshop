@@ -1,39 +1,36 @@
-<script>
-const API_URL = "https://script.google.com/macros/s/AKfycbzhXWvgNjQbxCcl8XTlicOrGM-otgZ-iwzSswz9_5XQWZncAOXXmcRGAECjZd1o6wQxBg/exec";
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>점수판 테스트</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+  <div>현재 총액: <span id="money">--</span></div>
+  <div>1팀: <span id="t1">0</span></div>
+  <div>2팀: <span id="t2">0</span></div>
+  <div>3팀: <span id="t3">0</span></div>
+  <div>4팀: <span id="t4">0</span></div>
 
-async function loadData() {
-  try {
-    const res = await fetch(API_URL + "?t=" + Date.now(), {
-      cache: "no-store"
-    });
-    const data = await res.json();
+  <script>
+    const API_URL = "https://script.google.com/macros/s/AKfycbzhXWvgNjQbxCcl8XTlicOrGM-otgZ-iwzSswz9_5XQWZncAOXXmcRGAECjZd1o6wQxBg/exec";
 
-    document.getElementById("money").innerText = data.totalMoney;
-    document.getElementById("t1").innerText = data.teams.team1;
-    document.getElementById("t2").innerText = data.teams.team2;
-    document.getElementById("t3").innerText = data.teams.team3;
-    document.getElementById("t4").innerText = data.teams.team4;
-  } catch (e) {
-    console.error(e);
-  }
-}
+    async function loadData() {
+      try {
+        const res = await fetch(API_URL + "?t=" + Date.now(), { cache: "no-store" });
+        const data = await res.json();
+        document.getElementById("money").innerText = data.totalMoney;
+        document.getElementById("t1").innerText = data.teams.team1;
+        document.getElementById("t2").innerText = data.teams.team2;
+        document.getElementById("t3").innerText = data.teams.team3;
+        document.getElementById("t4").innerText = data.teams.team4;
+      } catch(e) {
+        console.error("로드 실패", e);
+      }
+    }
 
-// 화면이 보일 때만 갱신
-function startAuto() {
-  loadData();
-  window.timer = setInterval(loadData, 2000);
-}
-
-function stopAuto() {
-  clearInterval(window.timer);
-}
-
-// 모바일 Chrome 핵심
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) startAuto();
-  else stopAuto();
-});
-
-// 최초 실행
-startAuto();
-</script>
+    loadData();
+    setInterval(loadData, 2000);
+  </script>
+</body>
+</html>
