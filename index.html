@@ -1,8 +1,11 @@
 <script>
-  const API_URL = "https://script.google.com/macros/s/AKfycbzOe1upOJOpyfM7LHD6FPilm8bVJq8rFIPEIZhy_sNcUTnyO1LYfQ7myxFPCIDG_GWH-A/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbzhXWvgNjQbxCcl8XTlicOrGM-otgZ-iwzSswz9_5XQWZncAOXXmcRGAECjZd1o6wQxBg/exec";
 
-  async function loadData() {
-    const res = await fetch(API_URL);
+async function loadData() {
+  try {
+    const res = await fetch(API_URL + "?t=" + Date.now(), {
+      cache: "no-store"
+    });
     const data = await res.json();
 
     document.getElementById("money").innerText = data.totalMoney;
@@ -10,8 +13,27 @@
     document.getElementById("t2").innerText = data.teams.team2;
     document.getElementById("t3").innerText = data.teams.team3;
     document.getElementById("t4").innerText = data.teams.team4;
+  } catch (e) {
+    console.error(e);
   }
+}
 
+// 화면이 보일 때만 갱신
+function startAuto() {
   loadData();
-  setInterval(loadData, 2000);
+  window.timer = setInterval(loadData, 2000);
+}
+
+function stopAuto() {
+  clearInterval(window.timer);
+}
+
+// 모바일 Chrome 핵심
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) startAuto();
+  else stopAuto();
+});
+
+// 최초 실행
+startAuto();
 </script>
