@@ -1,57 +1,17 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <title>실시간 점수판</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+  const API_URL = "https://script.google.com/macros/s/AKfycbzOe1upOJOpyfM7LHD6FPilm8bVJq8rFIPEIZhy_sNcUTnyO1LYfQ7myxFPCIDG_GWH-A/exec";
 
-  <style>
-    body {
-      margin: 0;
-      background-color: #000;
-      font-family: Arial, sans-serif;
-    }
+  async function loadData() {
+    const res = await fetch(API_URL);
+    const data = await res.json();
 
-    #refresh-btn {
-      position: fixed;
-      top: 10px;
-      right: 10px;
-      z-index: 9999;
-      padding: 10px 16px;
-      font-size: 14px;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      background-color: #ffffff;
-      color: #000000;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
-    }
+    document.getElementById("money").innerText = data.totalMoney;
+    document.getElementById("t1").innerText = data.teams.team1;
+    document.getElementById("t2").innerText = data.teams.team2;
+    document.getElementById("t3").innerText = data.teams.team3;
+    document.getElementById("t4").innerText = data.teams.team4;
+  }
 
-    iframe {
-      width: 100vw;
-      height: 100vh;
-      border: none;
-    }
-  </style>
-</head>
-
-<body>
-
-  <button id="refresh-btn" onclick="refreshScoreboard()">
-    새로고침
-  </button>
-
-  <iframe
-    id="scoreboard"
-    src="https://docs.google.com/spreadsheets/d/1Nr7yF6v4HwK2aDmfLLid-et1Sug27ppqOolGzDMGxo8/edit?rm=minimal">
-  </iframe>
-
-  <script>
-    function refreshScoreboard() {
-      const iframe = document.getElementById("scoreboard");
-      iframe.src = iframe.src;
-    }
-  </script>
-
-</body>
-</html>
+  loadData();
+  setInterval(loadData, 2000);
+</script>
