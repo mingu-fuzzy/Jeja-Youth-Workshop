@@ -4,26 +4,84 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>실시간 변동 현황</title>
+
   <style>
-    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; margin: 0; padding: 16px; }
-    .top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+      margin: 0;
+      padding: 16px;
+    }
+
+    .top {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
     .meta { color: #666; font-size: 12px; }
     .err { color: #b00020; font-size: 12px; white-space: pre-wrap; }
 
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; table-layout: fixed; }
-    th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
-    th { position: sticky; top: 0; background: #fff; z-index: 1; }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 12px;
+      table-layout: fixed;
+    }
 
-    /* 색상 규칙 (요청 반영) */
-    td.bomb, .bomb { color: orange; font-weight: 700; }     /* 폭탄 */
-    td.exchange, .exchange { color: green; font-weight: 700; } /* 교환 */
-    .plus { color: red; font-weight: 700; }                /* + */
-    .minus { color: blue; font-weight: 700; }              /* - */
+    th, td {
+      border: 1px solid #e5e5e5;
+      padding: 10px 8px;
+      text-align: center;
+    }
 
-    /* 번호 열 살짝 구분 */
-    td.num { color: #111; font-weight: 600; width: 56px; }
+    th {
+      position: sticky;
+      top: 0;
+      background: #fff;
+      z-index: 1;
+    }
+
+    /* ===== 색상 규칙 (요청 반영) ===== */
+
+    /* 폭탄 */
+    td.bomb,
+    .bomb {
+      color: black;
+      font-weight: 700;
+      background-color: #ffe5cc; /* 연주황 파스텔 */
+    }
+
+    /* 교환 */
+    td.exchange,
+    .exchange {
+      color: black;
+      font-weight: 700;
+      background-color: #e6f4d7; /* 연두 파스텔 */
+    }
+
+    /* 부호 */
+    .plus {
+      color: red;
+      font-weight: 700;
+    }
+
+    .minus {
+      color: blue;
+      font-weight: 700;
+    }
+
+    /* 번호 열 */
+    td.num {
+      color: #111;
+      font-weight: 600;
+      width: 56px;
+      background: #fff;
+    }
   </style>
 </head>
+
 <body>
   <div class="top">
     <h2 style="margin:0">실시간 변동 현황</h2>
@@ -36,49 +94,43 @@
   <div id="root"></div>
 
   <script>
-    // 새 배포 후 URL 수정 / API_URL만 교체
     const API_URL = "https://script.google.com/macros/s/AKfycbzuxPskGqktzoJbVRDZ7e-EWfIA9uIH6M5HlVfE2GR6GSKmcpqiHPnAEIb1lxFEnr2ioQ/exec";
     const API_TOKEN = "mkws_2026_4pK9Qw7xV2nH8dR3aL1c";
     const POLL_MS = 3000;
 
     let tableEl = null;
     let fixedRows = null;
-    let lastCells = null;   // [r][c] raw text
-    let lastCls = null;     // [r][c] className (bomb/exchange/num/"")
+    let lastCells = null;
+    let lastCls = null;
 
     let timer = null;
-    let badCount = 0;
     let inFlight = false;
 
-    function setMeta(msg) { document.getElementById("meta").textContent = msg; }
-    function setErr(msg) { document.getElementById("err").textContent = msg || ""; }
+    function setMeta(msg) {
+      document.getElementById("meta").textContent = msg;
+    }
+
+    function setErr(msg) {
+      document.getElementById("err").textContent = msg || "";
+    }
 
     function makeUrl() {
       const sep = API_URL.includes("?") ? "&" : "?";
       return API_URL + sep + "token=" + encodeURIComponent(API_TOKEN) + "&t=" + Date.now();
     }
 
-    function isShapeStable(header, rows) {
-      if (!Array.isArray(header) || header.length !== 5) return false;
-      if (!Array.isArray(rows)) return false;
-      for (const r of rows) {
-        if (!Array.isArray(r) || r.length !== 5) return false;
-      }
-      return true;
-    }
-
     function buildFixedTable(header, rowCount) {
       const root = document.getElementById("root");
       root.innerHTML = "";
 
-      const t = document.createElement("table");
+      const table = document.createElement("table");
       const thead = document.createElement("thead");
       const tbody = document.createElement("tbody");
 
       const trh = document.createElement("tr");
       header.forEach(h => {
         const th = document.createElement("th");
-        th.textContent = h ?? "";
+        th.textContent = h;
         trh.appendChild(th);
       });
       thead.appendChild(trh);
@@ -87,89 +139,66 @@
         const tr = document.createElement("tr");
         for (let c = 0; c < header.length; c++) {
           const td = document.createElement("td");
-          td.textContent = "";
           if (c === 0) td.className = "num";
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
       }
 
-      t.appendChild(thead);
-      t.appendChild(tbody);
-      root.appendChild(t);
-      tableEl = t;
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      root.appendChild(table);
 
-      lastCells = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
-      lastCls = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ("" )));
-      for (let r = 0; r < rowCount; r++) lastCls[r][0] = "num";
-    }
-
-    function updateHeader(header) {
-      const trh = tableEl.tHead.rows[0];
-      for (let c = 0; c < header.length; c++) {
-        const v = header[c] ?? "";
-        if (trh.cells[c].textContent !== v) trh.cells[c].textContent = v;
-      }
+      tableEl = table;
+      fixedRows = rowCount;
+      lastCells = Array.from({ length: rowCount }, () => Array(header.length).fill(""));
+      lastCls = Array.from({ length: rowCount }, () => Array(header.length).fill(""));
     }
 
     function clsForCell(c, value) {
-      // 번호열은 항상 num
       if (c === 0) return "num";
-
-      // 팀 칸에서만 폭탄/교환 셀 단위 강조(그 외는 span 색상 처리)
       if (value === "폭탄") return "bomb";
       if (value === "교환") return "exchange";
       return "";
     }
 
-    function escapeHtml_(s) {
+    function escapeHtml(s) {
       return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+        .replace(/>/g, "&gt;");
     }
 
     function colorizeText(text) {
-      // 안전하게 이스케이프 후, 특정 토큰만 span 처리
-      let t = escapeHtml_(text);
-
-      // 순서 중요
+      let t = escapeHtml(text);
       t = t.replace(/폭탄/g, '<span class="bomb">폭탄</span>');
       t = t.replace(/교환/g, '<span class="exchange">교환</span>');
       t = t.replace(/\+/g, '<span class="plus">+</span>');
       t = t.replace(/-/g, '<span class="minus">-</span>');
-
       return t;
     }
 
-    function updateRows(rows, colCount) {
+    function updateRows(rows) {
       const tbody = tableEl.tBodies[0];
 
       for (let r = 0; r < fixedRows; r++) {
         const tr = tbody.rows[r];
-        const row = rows[r];
-        if (!row) continue; // 부분 응답 대비: 기존 유지
+        if (!rows[r]) continue;
 
-        for (let c = 0; c < colCount; c++) {
+        for (let c = 0; c < rows[r].length; c++) {
           const td = tr.cells[c];
-          const newText = (row[c] ?? "").toString();
+          const newText = String(rows[r][c] ?? "");
           const oldText = lastCells[r][c];
 
           if (newText !== oldText) {
-            if (c === 0) {
-              td.textContent = newText; // 번호는 그냥 텍스트
-            } else {
-              td.innerHTML = colorizeText(newText); // 팀 칸은 색상 처리
-            }
+            if (c === 0) td.textContent = newText;
+            else td.innerHTML = colorizeText(newText);
             lastCells[r][c] = newText;
           }
 
           const newCls = clsForCell(c, newText);
-          const oldCls = lastCls[r][c];
-          if (newCls !== oldCls) {
-            td.className = newCls;
+          if (newCls !== lastCls[r][c]) {
+            td.className = newCls || (c === 0 ? "num" : "");
             lastCls[r][c] = newCls;
           }
         }
@@ -183,63 +212,22 @@
       try {
         const res = await fetch(makeUrl(), { cache: "no-store" });
         const json = await res.json();
+        if (!json.ok) throw new Error("API error");
 
-        if (!json || !json.ok) {
-          badCount++;
-          setErr("API 오류: " + (json?.error || "unknown") + "\n누적: " + badCount);
-          return;
-        }
+        if (!tableEl) buildFixedTable(json.header, json.rows.length);
+        updateRows(json.rows);
 
-        const header = (json.header || []).map(x => String(x ?? ""));
-        const rows = (json.rows || []).map(r => (r || []).map(x => String(x ?? "")));
-
-        if (!isShapeStable(header, rows)) {
-          badCount++;
-          setErr("형식 오류: header/rows 모양이 예상과 다릅니다.\n누적: " + badCount);
-          return;
-        }
-
-        if (!tableEl || fixedRows === null) {
-          fixedRows = rows.length;
-          buildFixedTable(header, fixedRows);
-        }
-
-        // 부분 데이터 방지: rows가 기대치의 90% 미만이면 무시
-        const minRows = Math.floor(fixedRows * 0.9);
-        if (rows.length < minRows) {
-          badCount++;
-          setErr("갱신 보류: 부분 데이터로 보입니다.\n받은 행: " + rows.length + " / 기대 행: " + fixedRows + "\n누적: " + badCount);
-          return;
-        }
-
-        badCount = 0;
+        setMeta("마지막 갱신: " + new Date().toLocaleString("ko-KR"));
         setErr("");
-
-        updateHeader(header);
-        updateRows(rows, header.length);
-
-        const stamp = json.updatedAt ? (" / 데이터: " + json.updatedAt) : "";
-        setMeta("마지막 갱신: " + new Date().toLocaleString("ko-KR") + stamp);
       } catch (e) {
-        badCount++;
-        setErr("갱신 실패: " + (e?.message || e) + "\n누적: " + badCount);
+        setErr("갱신 실패: " + e.message);
       } finally {
         inFlight = false;
       }
     }
 
-    function start(ms) {
-      if (timer) clearInterval(timer);
-      poll();
-      timer = setInterval(poll, ms);
-    }
-
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) start(15000);
-      else start(POLL_MS);
-    });
-
-    start(POLL_MS);
+    poll();
+    setInterval(poll, POLL_MS);
   </script>
 </body>
 </html>
