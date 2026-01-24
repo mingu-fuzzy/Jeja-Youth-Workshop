@@ -3,18 +3,23 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PUBLIC 실시간 보드 (Web App JSON)</title>
+  <title>PUBLIC 실시간 보드</title>
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; margin: 0; padding: 16px; }
     .top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .meta { color: #666; font-size: 12px; }
     .err { color: #b00020; font-size: 12px; white-space: pre-wrap; }
+
     table { border-collapse: collapse; width: 100%; margin-top: 12px; table-layout: fixed; }
     th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
     th { position: sticky; top: 0; background: #fff; z-index: 1; }
 
-    /* display:none 대신 테이블 행 전용 collapse */
-    tr.hidden-row { visibility: collapse; }
+    /* 색상 규칙 */
+    td.bomb { color: #d00000; font-weight: 700; }
+    td.exchange { color: #0057ff; font-weight: 700; }
+
+    /* 번호 열 살짝 구분 */
+    td.num { color: #111; font-weight: 600; width: 56px; }
   </style>
 </head>
 <body>
@@ -29,27 +34,36 @@
   <div id="root"></div>
 
   <script>
-    const API_URL = "https://script.google.com/macros/s/AKfycbz66ZZz1niYcvTY8igZbSTj5AXypDUmTVUSq1mLdu7HlwOEzkPLmBffUiYwzFuEANKyLw/exec";
+    // 새 배포 후 URL 수정 / API_URL만 교체
+    const API_URL = "https://script.google.com/macros/s/AKfycbzuxPskGqktzoJbVRDZ7e-EWfIA9uIH6M5HlVfE2GR6GSKmcpqiHPnAEIb1lxFEnr2ioQ/exec";
     const API_TOKEN = "mkws_2026_4pK9Qw7xV2nH8dR3aL1c";
     const POLL_MS = 3000;
 
-    const HIDE_FROM_TEXT = "현재";
-    const HIDE_FROM_TEXT2 = "총액";
-    const HIDE_TO_TEXT = "초기값";
-
     let tableEl = null;
     let fixedRows = null;
-    let lastCells = null;
-    let fixedHideStart = null;
-    let fixedHideEnd = null;
+    let lastCells = null;   // [r][c] text
+    let lastCls = null;     // [r][c] className (bomb/exchange/num/"")
+
     let timer = null;
     let badCount = 0;
-
-    // 중첩 poll 방지
     let inFlight = false;
 
     function setMeta(msg) { document.getElementById("meta").textContent = msg; }
     function setErr(msg) { document.getElementById("err").textContent = msg || ""; }
+
+    function makeUrl() {
+      const sep = API_URL.includes("?") ? "&" : "?";
+      return API_URL + sep + "token=" + encodeURIComponent(API_TOKEN) + "&t=" + Date.now();
+    }
+
+    function isShapeStable(header, rows) {
+      if (!Array.isArray(header) || header.length !== 5) return false;
+      if (!Array.isArray(rows)) return false;
+      for (const r of rows) {
+        if (!Array.isArray(r) || r.length !== 5) return false;
+      }
+      return true;
+    }
 
     function buildFixedTable(header, rowCount) {
       const root = document.getElementById("root");
@@ -60,11 +74,11 @@
       const tbody = document.createElement("tbody");
 
       const trh = document.createElement("tr");
-      for (let c = 0; c < header.length; c++) {
+      header.forEach(h => {
         const th = document.createElement("th");
-        th.textContent = header[c] ?? "";
+        th.textContent = h ?? "";
         trh.appendChild(th);
-      }
+      });
       thead.appendChild(trh);
 
       for (let r = 0; r < rowCount; r++) {
@@ -72,6 +86,7 @@
         for (let c = 0; c < header.length; c++) {
           const td = document.createElement("td");
           td.textContent = "";
+          if (c === 0) td.className = "num";
           tr.appendChild(td);
         }
         tbody.appendChild(tr);
@@ -83,34 +98,26 @@
       tableEl = t;
 
       lastCells = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
-    }
-
-    function computeHideRangeOnce(rows) {
-      if (fixedHideStart !== null && fixedHideEnd !== null) return;
-
-      for (let i = 0; i < rows.length; i++) {
-        const joined = (rows[i] || []).join(" ").trim();
-        if (fixedHideStart === null && joined.includes(HIDE_FROM_TEXT) && joined.includes(HIDE_FROM_TEXT2)) {
-          fixedHideStart = i;
-        }
-        if (fixedHideEnd === null && joined.includes(HIDE_TO_TEXT)) {
-          fixedHideEnd = i;
-        }
-      }
-    }
-
-    function rowShouldBeHidden(i) {
-      if (fixedHideStart === null || fixedHideEnd === null) return false;
-      if (fixedHideStart > fixedHideEnd) return false;
-      return i >= fixedHideStart && i <= fixedHideEnd;
+      lastCls = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ("" )));
+      for (let r = 0; r < rowCount; r++) lastCls[r][0] = "num";
     }
 
     function updateHeader(header) {
       const trh = tableEl.tHead.rows[0];
       for (let c = 0; c < header.length; c++) {
-        const newH = header[c] ?? "";
-        if (trh.cells[c].textContent !== newH) trh.cells[c].textContent = newH;
+        const v = header[c] ?? "";
+        if (trh.cells[c].textContent !== v) trh.cells[c].textContent = v;
       }
+    }
+
+    function clsForCell(c, value) {
+      // 번호열은 항상 num
+      if (c === 0) return "num";
+
+      // 팀 칸에서만 폭탄/교환 색상
+      if (value === "폭탄") return "bomb";
+      if (value === "교환") return "exchange";
+      return "";
     }
 
     function updateRows(rows, colCount) {
@@ -118,39 +125,27 @@
 
       for (let r = 0; r < fixedRows; r++) {
         const tr = tbody.rows[r];
-
-        // 숨김 처리(레이아웃 변화 최소)
-        if (rowShouldBeHidden(r)) tr.classList.add("hidden-row");
-        else tr.classList.remove("hidden-row");
-
-        // 데이터가 부족하면 이전값 유지(빈값으로 덮어씌워 "사라짐" 방지)
-        const row = rows[r] || null;
+        const row = rows[r];
+        if (!row) continue; // 부분 응답 대비: 기존 유지
 
         for (let c = 0; c < colCount; c++) {
           const td = tr.cells[c];
+          const newText = (row[c] ?? "").toString();
+          const oldText = lastCells[r][c];
 
-          // row 자체가 없으면 업데이트 안 함(이전 값 유지)
-          if (!row) continue;
+          if (newText !== oldText) {
+            td.textContent = newText;
+            lastCells[r][c] = newText;
+          }
 
-          const newVal = (row[c] ?? "").toString();
-          const oldVal = lastCells[r][c];
-
-          if (newVal !== oldVal) {
-            td.textContent = newVal;
-            lastCells[r][c] = newVal;
+          const newCls = clsForCell(c, newText);
+          const oldCls = lastCls[r][c];
+          if (newCls !== oldCls) {
+            td.className = newCls;
+            lastCls[r][c] = newCls;
           }
         }
       }
-    }
-
-    function isShapeStable(header, rows) {
-      if (!Array.isArray(header) || header.length === 0) return false;
-      if (!Array.isArray(rows)) return false;
-      for (let i = 0; i < rows.length; i++) {
-        if (!Array.isArray(rows[i])) return false;
-        if (rows[i].length !== header.length) return false;
-      }
-      return true;
     }
 
     async function poll() {
@@ -158,13 +153,7 @@
       inFlight = true;
 
       try {
-        const url =
-          API_URL +
-          (API_URL.includes("?") ? "&" : "?") +
-          "token=" + encodeURIComponent(API_TOKEN) +
-          "&t=" + Date.now();
-
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(makeUrl(), { cache: "no-store" });
         const json = await res.json();
 
         if (!json || !json.ok) {
@@ -178,7 +167,7 @@
 
         if (!isShapeStable(header, rows)) {
           badCount++;
-          setErr("형식 오류: header/rows 모양이 일정하지 않습니다.\n누적: " + badCount);
+          setErr("형식 오류: header/rows 모양이 예상과 다릅니다.\n누적: " + badCount);
           return;
         }
 
@@ -187,15 +176,13 @@
           buildFixedTable(header, fixedRows);
         }
 
-        // 부분 데이터 방지: rows가 기대치의 90% 미만이면 무시(화면 유지)
+        // 부분 데이터 방지: rows가 기대치의 90% 미만이면 무시
         const minRows = Math.floor(fixedRows * 0.9);
         if (rows.length < minRows) {
           badCount++;
           setErr("갱신 보류: 부분 데이터로 보입니다.\n받은 행: " + rows.length + " / 기대 행: " + fixedRows + "\n누적: " + badCount);
           return;
         }
-
-        computeHideRangeOnce(rows);
 
         badCount = 0;
         setErr("");
