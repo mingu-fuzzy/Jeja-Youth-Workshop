@@ -12,8 +12,9 @@
     table { border-collapse: collapse; width: 100%; margin-top: 12px; table-layout: fixed; }
     th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
     th { position: sticky; top: 0; background: #fff; z-index: 1; }
-    .changed { outline: 2px solid #222; transition: outline 0.6s ease; }
-    tr.hidden-row { display: none; }
+
+    /* display:none 대신 테이블 행 전용 collapse */
+    tr.hidden-row { visibility: collapse; }
   </style>
 </head>
 <body>
@@ -28,36 +29,27 @@
   <div id="root"></div>
 
   <script>
-    // --- Web App JSON API ---
     const API_URL = "https://script.google.com/macros/s/AKfycbz66ZZz1niYcvTY8igZbSTj5AXypDUmTVUSq1mLdu7HlwOEzkPLmBffUiYwzFuEANKyLw/exec";
-
-    // Apps Script에 넣어둔 WEB_API_TOKEN 값과 동일해야 합니다
-    // (사용자 스크립트 예시에서: mkws_2026_4pK9Qw7xV2nH8dR3aL1c)
     const API_TOKEN = "mkws_2026_4pK9Qw7xV2nH8dR3aL1c";
-
-    // 2~5초 권장
     const POLL_MS = 3000;
 
-    // "현재 총액" 행부터 "초기값" 행까지 숨김(표에서 안 보이게)
     const HIDE_FROM_TEXT = "현재";
     const HIDE_FROM_TEXT2 = "총액";
     const HIDE_TO_TEXT = "초기값";
 
     let tableEl = null;
-    let fixedRows = null;     // 첫 정상 응답의 rows.length로 고정
-    let lastCells = null;     // [r][c] 마지막 표시값
+    let fixedRows = null;
+    let lastCells = null;
     let fixedHideStart = null;
     let fixedHideEnd = null;
     let timer = null;
     let badCount = 0;
 
+    // 중첩 poll 방지
+    let inFlight = false;
+
     function setMeta(msg) { document.getElementById("meta").textContent = msg; }
     function setErr(msg) { document.getElementById("err").textContent = msg || ""; }
-
-    function cacheBusted(url) {
-      const sep = url.includes("?") ? "&" : "?";
-      return url + sep + "token=" + encodeURIComponent(API_TOKEN) + "&t=" + Date.now();
-    }
 
     function buildFixedTable(header, rowCount) {
       const root = document.getElementById("root");
@@ -93,11 +85,6 @@
       lastCells = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
     }
 
-    function flash(el) {
-      el.classList.add("changed");
-      setTimeout(() => el.classList.remove("changed"), 300);
-    }
-
     function computeHideRangeOnce(rows) {
       if (fixedHideStart !== null && fixedHideEnd !== null) return;
 
@@ -122,9 +109,7 @@
       const trh = tableEl.tHead.rows[0];
       for (let c = 0; c < header.length; c++) {
         const newH = header[c] ?? "";
-        if (trh.cells[c].textContent !== newH) {
-          trh.cells[c].textContent = newH;
-        }
+        if (trh.cells[c].textContent !== newH) trh.cells[c].textContent = newH;
       }
     }
 
@@ -134,20 +119,25 @@
       for (let r = 0; r < fixedRows; r++) {
         const tr = tbody.rows[r];
 
-        // 숨김 처리(삭제 X)
+        // 숨김 처리(레이아웃 변화 최소)
         if (rowShouldBeHidden(r)) tr.classList.add("hidden-row");
         else tr.classList.remove("hidden-row");
 
-        const row = rows[r] || [];
+        // 데이터가 부족하면 이전값 유지(빈값으로 덮어씌워 "사라짐" 방지)
+        const row = rows[r] || null;
+
         for (let c = 0; c < colCount; c++) {
           const td = tr.cells[c];
+
+          // row 자체가 없으면 업데이트 안 함(이전 값 유지)
+          if (!row) continue;
+
           const newVal = (row[c] ?? "").toString();
           const oldVal = lastCells[r][c];
 
           if (newVal !== oldVal) {
             td.textContent = newVal;
             lastCells[r][c] = newVal;
-            flash(td);
           }
         }
       }
@@ -164,8 +154,17 @@
     }
 
     async function poll() {
+      if (inFlight) return;
+      inFlight = true;
+
       try {
-        const res = await fetch(cacheBusted(API_URL), { cache: "no-store" });
+        const url =
+          API_URL +
+          (API_URL.includes("?") ? "&" : "?") +
+          "token=" + encodeURIComponent(API_TOKEN) +
+          "&t=" + Date.now();
+
+        const res = await fetch(url, { cache: "no-store" });
         const json = await res.json();
 
         if (!json || !json.ok) {
@@ -183,13 +182,12 @@
           return;
         }
 
-        // 첫 정상 응답에서 표를 고정 생성 (이후 리로드/재구성 거의 없음)
         if (!tableEl || fixedRows === null) {
           fixedRows = rows.length;
           buildFixedTable(header, fixedRows);
         }
 
-        // 행 수가 갑자기 크게 줄어든 응답은 무시(부분 스냅샷 방지)
+        // 부분 데이터 방지: rows가 기대치의 90% 미만이면 무시(화면 유지)
         const minRows = Math.floor(fixedRows * 0.9);
         if (rows.length < minRows) {
           badCount++;
@@ -197,13 +195,11 @@
           return;
         }
 
-        // 숨김 구간은 한 번만 찾고 고정
         computeHideRangeOnce(rows);
 
         badCount = 0;
         setErr("");
 
-        // 표시 갱신 (헤더/셀만)
         updateHeader(header);
         updateRows(rows, header.length);
 
@@ -212,6 +208,8 @@
       } catch (e) {
         badCount++;
         setErr("갱신 실패: " + (e?.message || e) + "\n누적: " + badCount);
+      } finally {
+        inFlight = false;
       }
     }
 
