@@ -14,9 +14,11 @@
     th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
     th { position: sticky; top: 0; background: #fff; z-index: 1; }
 
-    /* 색상 규칙 */
-    td.bomb { color: #d00000; font-weight: 700; }
-    td.exchange { color: #0057ff; font-weight: 700; }
+    /* 색상 규칙 (요청 반영) */
+    td.bomb, .bomb { color: orange; font-weight: 700; }     /* 폭탄 */
+    td.exchange, .exchange { color: green; font-weight: 700; } /* 교환 */
+    .plus { color: red; font-weight: 700; }                /* + */
+    .minus { color: blue; font-weight: 700; }              /* - */
 
     /* 번호 열 살짝 구분 */
     td.num { color: #111; font-weight: 600; width: 56px; }
@@ -41,7 +43,7 @@
 
     let tableEl = null;
     let fixedRows = null;
-    let lastCells = null;   // [r][c] text
+    let lastCells = null;   // [r][c] raw text
     let lastCls = null;     // [r][c] className (bomb/exchange/num/"")
 
     let timer = null;
@@ -114,10 +116,32 @@
       // 번호열은 항상 num
       if (c === 0) return "num";
 
-      // 팀 칸에서만 폭탄/교환 색상
+      // 팀 칸에서만 폭탄/교환 셀 단위 강조(그 외는 span 색상 처리)
       if (value === "폭탄") return "bomb";
       if (value === "교환") return "exchange";
       return "";
+    }
+
+    function escapeHtml_(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function colorizeText(text) {
+      // 안전하게 이스케이프 후, 특정 토큰만 span 처리
+      let t = escapeHtml_(text);
+
+      // 순서 중요
+      t = t.replace(/폭탄/g, '<span class="bomb">폭탄</span>');
+      t = t.replace(/교환/g, '<span class="exchange">교환</span>');
+      t = t.replace(/\+/g, '<span class="plus">+</span>');
+      t = t.replace(/-/g, '<span class="minus">-</span>');
+
+      return t;
     }
 
     function updateRows(rows, colCount) {
@@ -134,7 +158,11 @@
           const oldText = lastCells[r][c];
 
           if (newText !== oldText) {
-            td.textContent = newText;
+            if (c === 0) {
+              td.textContent = newText; // 번호는 그냥 텍스트
+            } else {
+              td.innerHTML = colorizeText(newText); // 팀 칸은 색상 처리
+            }
             lastCells[r][c] = newText;
           }
 
