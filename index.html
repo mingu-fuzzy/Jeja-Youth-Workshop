@@ -29,11 +29,280 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
-    // "웹에 게시(Publish to the web)"로 만든 CSV 링크를 넣으세요 (pub + output=csv)
+    // 반드시 pub?gid=...&single=true&output=csv 형태로 넣으세요
     const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUs_ZDJTwEC_IJa43ej0BE_ICbuNM_5lTAi0Y8b_CjcCPtQHQt5_N9UC6RE6cX4md4xAp1pI3sbuOk/pub?gid=0&single=true&output=csv";
 
-    // 2~6초 권장 (너무 짧으면 모바일 배터리/데이터 소모 ↑)
-    const POLL_MS = 2500;
+    // 모바일 안정성 위해 4000~7000ms 권장
+    const POLL_MS = 5000;
+
+    // PUBLIC 시트가 B~E 4칸만 다룬다고 하셨으니 기대 열 수는 4.
+    // 만약 A열(번호)까지 포함해서 내보내고 있으면 5로 바꾸세요.
+    const EXPECTED_COLS = 4;
+
+    // 너무 짧은 데이터(부분 응답) 걸러내기 위한 최소 본문 행 수(헤더 제외)
+    // PUBLIC B9:E208이면 대략 200행 정도니까 50 정도면 충분히 안전합니다.
+    const MIN_BODY_ROWS = 50;
 
     let tableEl = null;
-    let lastMatrix = null;
+
+    // 마지막으로 화면에 반영된 "정상 데이터"
+    let lastGoodMatrix = null;
+
+    // 떨림 제거: 새 정상 데이터가 2번 연속 들어왔을 때만 반영
+    let pendingMatrix = null;
+    let pendingCount = 0;
+
+    let timer = null;
+    let badCount = 0;
+
+    function cacheBusted(url) {
+      const sep = url.includes("?") ? "&" : "?";
+      return url + sep + "t=" + Date.now();
+    }
+
+    function setMeta(msg) {
+      document.getElementById("meta").textContent = msg;
+    }
+
+    function setErr(msg) {
+      document.getElementById("err").textContent = msg || "";
+    }
+
+    function looksLikeHtml(text) {
+      const head = text.slice(0, 300).toLowerCase();
+      return head.includes("<html") || head.includes("<!doctype") || head.includes("<body");
+    }
+
+    function parseCSVStable(text) {
+      if (!text) return null;
+      if (looksLikeHtml(text)) return null;
+
+      const parsed = Papa.parse(text, {
+        skipEmptyLines: true,
+      });
+
+      if (parsed.errors && parsed.errors.length) return null;
+
+      const data = parsed.data || [];
+      if (!Array.isArray(data) || data.length < 2) return null;
+
+      const matrix = data.map(row => (row || []).map(v => (v == null ? "" : String(v))));
+
+      return matrix;
+    }
+
+    // "현재 총액" 행부터 "초기값" 행까지(포함) 화면에서 제거
+    function filterVisibleRows(matrix) {
+      if (!matrix || matrix.length <= 1) return matrix;
+
+      const header = matrix[0];
+      const body = matrix.slice(1);
+
+      let hideStart = -1;
+      let hideEnd = -1;
+
+      for (let i = 0; i < body.length; i++) {
+        const joined = body[i].join(" ").trim();
+        if (hideStart === -1 && joined.includes("현재") && joined.includes("총액")) hideStart = i;
+        if (hideEnd === -1 && joined.includes("초기값")) hideEnd = i;
+      }
+
+      if (hideStart === -1 || hideEnd === -1 || hideStart > hideEnd) {
+        return matrix;
+      }
+
+      const visibleBody = body.filter((_, idx) => idx < hideStart || idx > hideEnd);
+      return [header, ...visibleBody];
+    }
+
+    function validateMatrix(matrix) {
+      if (!matrix || matrix.length < 2) return { ok: false, reason: "데이터가 너무 짧습니다." };
+
+      // 헤더 제외 본문 행 수
+      const bodyRows = matrix.length - 1;
+      if (bodyRows < MIN_BODY_ROWS) return { ok: false, reason: "본문 행이 너무 적습니다(부분 응답 가능)." };
+
+      // 모든 행의 열 수가 일정한지 확인
+      const cols = (matrix[0] || []).length;
+      if (cols !== EXPECTED_COLS) return { ok: false, reason: "열 개수가 기대와 다릅니다. 현재 " + cols };
+
+      for (let r = 0; r < matrix.length; r++) {
+        if ((matrix[r] || []).length !== cols) {
+          return { ok: false, reason: "행마다 열 개수가 달라졌습니다." };
+        }
+      }
+
+      return { ok: true, reason: "" };
+    }
+
+    function buildTable(matrix) {
+      const root = document.getElementById("root");
+      root.innerHTML = "";
+
+      const t = document.createElement("table");
+      const thead = document.createElement("thead");
+      const tbody = document.createElement("tbody");
+
+      const header = matrix[0] || [];
+      const body = matrix.slice(1);
+
+      const trh = document.createElement("tr");
+      for (let c = 0; c < header.length; c++) {
+        const th = document.createElement("th");
+        th.textContent = header[c];
+        trh.appendChild(th);
+      }
+      thead.appendChild(trh);
+
+      for (let r = 0; r < body.length; r++) {
+        const tr = document.createElement("tr");
+        for (let c = 0; c < body[r].length; c++) {
+          const td = document.createElement("td");
+          td.textContent = body[r][c];
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+
+      t.appendChild(thead);
+      t.appendChild(tbody);
+      root.appendChild(t);
+      tableEl = t;
+    }
+
+    function sameShape(a, b) {
+      if (!a || !b) return false;
+      if (a.length !== b.length) return false;
+      for (let r = 0; r < a.length; r++) {
+        if ((a[r] || []).length !== (b[r] || []).length) return false;
+      }
+      return true;
+    }
+
+    function flash(el) {
+      el.classList.add("changed");
+      setTimeout(() => el.classList.remove("changed"), 350);
+    }
+
+    function updateCells(next) {
+      const tbody = tableEl.tBodies[0];
+      const nextBody = next.slice(1);
+      const prevBody = lastGoodMatrix.slice(1);
+
+      // shape 동일 전제
+      for (let r = 0; r < nextBody.length; r++) {
+        const tr = tbody.rows[r];
+        if (!tr) continue;
+
+        for (let c = 0; c < nextBody[r].length; c++) {
+          const td = tr.cells[c];
+          if (!td) continue;
+
+          const newVal = nextBody[r][c] ?? "";
+          const oldVal = prevBody[r]?.[c] ?? "";
+
+          if (newVal !== oldVal) {
+            td.textContent = newVal;
+            flash(td);
+          }
+        }
+      }
+    }
+
+    // 떨림 방지: 동일한 matrix가 2번 연속 들어와야 apply
+    function commitWithStabilizer(candidate) {
+      const candKey = JSON.stringify(candidate);
+
+      if (!pendingMatrix) {
+        pendingMatrix = candidate;
+        pendingCount = 1;
+        return false;
+      }
+
+      const pendingKey = JSON.stringify(pendingMatrix);
+      if (candKey === pendingKey) {
+        pendingCount++;
+      } else {
+        pendingMatrix = candidate;
+        pendingCount = 1;
+      }
+
+      return pendingCount >= 2;
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch(cacheBusted(CSV_URL), { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+
+        const text = await res.text();
+
+        let matrix = parseCSVStable(text);
+        if (!matrix) {
+          badCount++;
+          setErr("갱신 보류(비정상 응답). 누적 " + badCount);
+          return;
+        }
+
+        matrix = filterVisibleRows(matrix);
+
+        const v = validateMatrix(matrix);
+        if (!v.ok) {
+          badCount++;
+          setErr("갱신 보류(" + v.reason + "). 누적 " + badCount);
+          return;
+        }
+
+        // 여기까지 왔으면 "정상 후보"
+        badCount = 0;
+        setErr("");
+
+        // 2번 연속 동일 후보일 때만 반영
+        const okToCommit = commitWithStabilizer(matrix);
+        if (!okToCommit) {
+          // 화면 유지, 메타만 업데이트
+          setMeta("대기 중: 안정화 확인 중");
+          return;
+        }
+
+        const now = new Date();
+        setMeta("마지막 갱신: " + now.toLocaleString("ko-KR"));
+
+        if (!tableEl || !lastGoodMatrix) {
+          buildTable(matrix);
+          lastGoodMatrix = matrix;
+          return;
+        }
+
+        // 모양이 바뀌면 전체 재구성. 단, 이것도 깜빡임 줄이기 위해 정상 데이터일 때만 수행
+        if (!sameShape(matrix, lastGoodMatrix)) {
+          buildTable(matrix);
+          lastGoodMatrix = matrix;
+          return;
+        }
+
+        // 값만 업데이트
+        updateCells(matrix);
+        lastGoodMatrix = matrix;
+      } catch (e) {
+        badCount++;
+        setErr("갱신 실패: " + (e?.message || e) + ". 누적 " + badCount);
+        // 실패해도 화면은 절대 비우지 않습니다.
+      }
+    }
+
+    function start(intervalMs) {
+      if (timer) clearInterval(timer);
+      poll();
+      timer = setInterval(poll, intervalMs);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) start(15000);
+      else start(POLL_MS);
+    });
+
+    start(POLL_MS);
+  </script>
+</body>
+</html>
