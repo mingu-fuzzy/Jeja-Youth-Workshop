@@ -23,48 +23,47 @@
     .meta { color: #666; font-size: 12px; }
     .err { color: #b00020; font-size: 12px; white-space: pre-wrap; }
 
-    /* ===== 테이블 기본 ===== */
     table {
       border-collapse: collapse;
       width: 100%;
       margin-top: 12px;
       table-layout: fixed;
-      border: 3px solid #333;            /* 바깥 테두리 */
+      border: 3px solid #333; /* 바깥 테두리 */
     }
 
     th, td {
       border: 1px solid #e5e5e5;
       padding: 10px 8px;
       text-align: center;
+      background: #fff;
     }
 
-    /* ===== 헤더(1행) ===== */
+    /* 헤더(1행): sticky + 굵은 구분선(사라지지 않게 box-shadow 사용) */
     thead th {
       position: sticky;
       top: 0;
+      z-index: 10;
       background: #fff;
-      z-index: 1;
-      border-bottom: 3px solid #333;     /* 1행 굵은 구분선 */
+      border-bottom: 0; /* border로 굵은 줄 만들지 않음 */
+      box-shadow: inset 0 -3px 0 #333; /* 굵은 가로선 */
     }
 
-    /* ===== 번호 열 ===== */
+    /* 번호 열(헤더+바디): 굵은 세로선 */
     th:first-child,
     td.num {
-      border-right: 3px solid #333;      /* 번호 열 굵은 구분선 */
+      border-right: 3px solid #333;
       font-weight: 600;
       color: #111;
       width: 56px;
       background: #fff;
     }
 
-    /* ===== 색상 규칙 ===== */
-
     /* 폭탄 */
     td.bomb,
     .bomb {
       color: black;
       font-weight: 700;
-      background-color: #ffe5cc;         /* 연주황 파스텔 */
+      background-color: #ffe5cc; /* 연주황 파스텔 */
     }
 
     /* 교환 */
@@ -72,7 +71,7 @@
     .exchange {
       color: black;
       font-weight: 700;
-      background-color: #e6f4d7;         /* 연두 파스텔 */
+      background-color: #e6f4d7; /* 연두 파스텔 */
     }
 
     /* 부호 */
@@ -101,25 +100,40 @@
     let fixedRows = null;
     let lastCells = null;
     let lastCls = null;
+
+    let timer = null;
+    let badCount = 0;
     let inFlight = false;
+
+    function setMeta(msg) { document.getElementById("meta").textContent = msg; }
+    function setErr(msg) { document.getElementById("err").textContent = msg || ""; }
 
     function makeUrl() {
       const sep = API_URL.includes("?") ? "&" : "?";
       return API_URL + sep + "token=" + encodeURIComponent(API_TOKEN) + "&t=" + Date.now();
     }
 
+    function isShapeStable(header, rows) {
+      if (!Array.isArray(header) || header.length !== 5) return false;
+      if (!Array.isArray(rows)) return false;
+      for (const r of rows) {
+        if (!Array.isArray(r) || r.length !== 5) return false;
+      }
+      return true;
+    }
+
     function buildFixedTable(header, rowCount) {
       const root = document.getElementById("root");
       root.innerHTML = "";
 
-      const table = document.createElement("table");
+      const t = document.createElement("table");
       const thead = document.createElement("thead");
       const tbody = document.createElement("tbody");
 
       const trh = document.createElement("tr");
       header.forEach(h => {
         const th = document.createElement("th");
-        th.textContent = h;
+        th.textContent = h ?? "";
         trh.appendChild(th);
       });
       thead.appendChild(trh);
@@ -134,14 +148,22 @@
         tbody.appendChild(tr);
       }
 
-      table.appendChild(thead);
-      table.appendChild(tbody);
-      root.appendChild(table);
+      t.appendChild(thead);
+      t.appendChild(tbody);
+      root.appendChild(t);
+      tableEl = t;
 
-      tableEl = table;
-      fixedRows = rowCount;
-      lastCells = Array.from({ length: rowCount }, () => Array(header.length).fill(""));
-      lastCls = Array.from({ length: rowCount }, () => Array(header.length).fill(""));
+      lastCells = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
+      lastCls = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
+      for (let r = 0; r < rowCount; r++) lastCls[r][0] = "num";
+    }
+
+    function updateHeader(header) {
+      const trh = tableEl.tHead.rows[0];
+      for (let c = 0; c < header.length; c++) {
+        const v = header[c] ?? "";
+        if (trh.cells[c].textContent !== v) trh.cells[c].textContent = v;
+      }
     }
 
     function clsForCell(c, value) {
@@ -151,32 +173,37 @@
       return "";
     }
 
-    function escapeHtml(s) {
+    function escapeHtml_(s) {
       return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
     }
 
     function colorizeText(text) {
-      let t = escapeHtml(text);
+      let t = escapeHtml_(text);
+
       t = t.replace(/폭탄/g, '<span class="bomb">폭탄</span>');
       t = t.replace(/교환/g, '<span class="exchange">교환</span>');
       t = t.replace(/\+/g, '<span class="plus">+</span>');
       t = t.replace(/-/g, '<span class="minus">-</span>');
+
       return t;
     }
 
-    function updateRows(rows) {
+    function updateRows(rows, colCount) {
       const tbody = tableEl.tBodies[0];
 
       for (let r = 0; r < fixedRows; r++) {
-        if (!rows[r]) continue;
         const tr = tbody.rows[r];
+        const row = rows[r];
+        if (!row) continue;
 
-        for (let c = 0; c < rows[r].length; c++) {
+        for (let c = 0; c < colCount; c++) {
           const td = tr.cells[c];
-          const newText = String(rows[r][c] ?? "");
+          const newText = (row[c] ?? "").toString();
           const oldText = lastCells[r][c];
 
           if (newText !== oldText) {
@@ -186,7 +213,8 @@
           }
 
           const newCls = clsForCell(c, newText);
-          if (newCls !== lastCls[r][c]) {
+          const oldCls = lastCls[r][c];
+          if (newCls !== oldCls) {
             td.className = newCls || (c === 0 ? "num" : "");
             lastCls[r][c] = newCls;
           }
@@ -201,23 +229,62 @@
       try {
         const res = await fetch(makeUrl(), { cache: "no-store" });
         const json = await res.json();
-        if (!json.ok) throw new Error("API error");
 
-        if (!tableEl) buildFixedTable(json.header, json.rows.length);
-        updateRows(json.rows);
+        if (!json || !json.ok) {
+          badCount++;
+          setErr("API 오류: " + (json?.error || "unknown") + "\n누적: " + badCount);
+          return;
+        }
 
-        document.getElementById("meta").textContent =
-          "마지막 갱신: " + new Date().toLocaleString("ko-KR");
-        document.getElementById("err").textContent = "";
+        const header = (json.header || []).map(x => String(x ?? ""));
+        const rows = (json.rows || []).map(r => (r || []).map(x => String(x ?? "")));
+
+        if (!isShapeStable(header, rows)) {
+          badCount++;
+          setErr("형식 오류: header/rows 모양이 예상과 다릅니다.\n누적: " + badCount);
+          return;
+        }
+
+        if (!tableEl || fixedRows === null) {
+          fixedRows = rows.length;
+          buildFixedTable(header, fixedRows);
+        }
+
+        const minRows = Math.floor(fixedRows * 0.9);
+        if (rows.length < minRows) {
+          badCount++;
+          setErr("갱신 보류: 부분 데이터로 보입니다.\n받은 행: " + rows.length + " / 기대 행: " + fixedRows + "\n누적: " + badCount);
+          return;
+        }
+
+        badCount = 0;
+        setErr("");
+
+        updateHeader(header);
+        updateRows(rows, header.length);
+
+        const stamp = json.updatedAt ? (" / 데이터: " + json.updatedAt) : "";
+        setMeta("마지막 갱신: " + new Date().toLocaleString("ko-KR") + stamp);
       } catch (e) {
-        document.getElementById("err").textContent = "갱신 실패: " + e.message;
+        badCount++;
+        setErr("갱신 실패: " + (e?.message || e) + "\n누적: " + badCount);
       } finally {
         inFlight = false;
       }
     }
 
-    poll();
-    setInterval(poll, POLL_MS);
+    function start(ms) {
+      if (timer) clearInterval(timer);
+      poll();
+      timer = setInterval(poll, ms);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) start(15000);
+      else start(POLL_MS);
+    });
+
+    start(POLL_MS);
   </script>
 </body>
 </html>
