@@ -13,6 +13,7 @@
     th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
     th { position: sticky; top: 0; background: #fff; z-index: 1; }
     .changed { outline: 2px solid #222; transition: outline 0.6s ease; }
+    tr.hidden-row { display: none; }
   </style>
 </head>
 <body>
@@ -34,14 +35,24 @@
 
     const POLL_MS = 5000;
 
-    // CSV가 6열이든 10열이든 상관없이, 화면엔 "B~E"만 보여주기
-    // 0부터 세니까: A=0, B=1, C=2, D=3, E=4
-    const VIEW_COL_START = 1;
+    // CSV가 몇 열이든 상관없이, 화면엔 B~E(4칸)만 보여줌
+    const VIEW_COL_START = 1; // A=0, B=1
     const VIEW_COL_COUNT = 4;
 
+    // 표가 너무 자주 흔들리면 5~8초로 늘리세요
+    // const POLL_MS = 7000;
+
     let tableEl = null;
-    let lastGoodMatrix = null;
+    let headerTexts = null;
+
+    // "표의 고정 뼈대"를 위해, 처음에 본문 행 수를 고정해둠
+    let fixedBodyRows = null;
+
+    // 마지막으로 반영된 값(셀 단위 비교용)
+    let lastCells = null;
+
     let timer = null;
+    let badCount = 0;
 
     function cacheBusted(url) {
       const sep = url.includes("?") ? "&" : "?";
@@ -66,62 +77,39 @@
       const data = parsed.data || [];
       if (!Array.isArray(data) || data.length < 2) return null;
 
-      // 2D 문자열 배열
       return data.map(row => (row || []).map(v => (v == null ? "" : String(v))));
     }
 
-    // 1) B~E 4칸만 남기기 (열 수 흔들림 해결)
     function sliceToViewCols(matrix) {
       if (!matrix || matrix.length === 0) return matrix;
-
-      const out = matrix.map(row => {
+      return matrix.map(row => {
         const r = row || [];
         const sliced = r.slice(VIEW_COL_START, VIEW_COL_START + VIEW_COL_COUNT);
         while (sliced.length < VIEW_COL_COUNT) sliced.push("");
         return sliced;
       });
-
-      return out;
     }
 
-    // 2) "현재 총액" 행부터 "초기값" 행까지(포함) 숨김
-    function filterVisibleRows(matrix) {
-      if (!matrix || matrix.length <= 1) return matrix;
-
-      const header = matrix[0];
-      const body = matrix.slice(1);
-
+    // "현재 총액~초기값" 구간을 '삭제'하지 말고, 숨길 row index 목록으로 만든다
+    function computeHiddenBodyRowMask(bodyRows) {
+      // bodyRows: [ [c1..c4], [..], ... ]
       let hideStart = -1;
       let hideEnd = -1;
 
-      for (let i = 0; i < body.length; i++) {
-        const joined = body[i].join(" ").trim();
+      for (let i = 0; i < bodyRows.length; i++) {
+        const joined = bodyRows[i].join(" ").trim();
         if (hideStart === -1 && joined.includes("현재") && joined.includes("총액")) hideStart = i;
         if (hideEnd === -1 && joined.includes("초기값")) hideEnd = i;
       }
 
-      if (hideStart === -1 || hideEnd === -1 || hideStart > hideEnd) return matrix;
-
-      const visibleBody = body.filter((_, idx) => idx < hideStart || idx > hideEnd);
-      return [header, ...visibleBody];
+      const mask = new Array(bodyRows.length).fill(false);
+      if (hideStart !== -1 && hideEnd !== -1 && hideStart <= hideEnd) {
+        for (let i = hideStart; i <= hideEnd; i++) mask[i] = true;
+      }
+      return mask;
     }
 
-    function validateMatrix(matrix) {
-      if (!matrix || matrix.length < 2) return { ok: false, reason: "데이터가 너무 짧습니다." };
-
-      const cols = (matrix[0] || []).length;
-      if (cols !== VIEW_COL_COUNT) {
-        return { ok: false, reason: "열 개수가 기대와 다릅니다. 현재 " + cols };
-      }
-
-      for (let r = 0; r < matrix.length; r++) {
-        if ((matrix[r] || []).length !== cols) return { ok: false, reason: "행마다 열 개수가 달라졌습니다." };
-      }
-
-      return { ok: true, reason: "" };
-    }
-
-    function buildTable(matrix) {
+    function buildFixedTable(header, bodyRowCount) {
       const root = document.getElementById("root");
       root.innerHTML = "";
 
@@ -129,9 +117,7 @@
       const thead = document.createElement("thead");
       const tbody = document.createElement("tbody");
 
-      const header = matrix[0] || [];
-      const body = matrix.slice(1);
-
+      // header
       const trh = document.createElement("tr");
       header.forEach(h => {
         const th = document.createElement("th");
@@ -140,29 +126,24 @@
       });
       thead.appendChild(trh);
 
-      body.forEach(row => {
+      // fixed body rows
+      for (let r = 0; r < bodyRowCount; r++) {
         const tr = document.createElement("tr");
-        row.forEach(cell => {
+        for (let c = 0; c < VIEW_COL_COUNT; c++) {
           const td = document.createElement("td");
-          td.textContent = cell;
+          td.textContent = "";
           tr.appendChild(td);
-        });
+        }
         tbody.appendChild(tr);
-      });
+      }
 
       t.appendChild(thead);
       t.appendChild(tbody);
       root.appendChild(t);
       tableEl = t;
-    }
 
-    function sameShape(a, b) {
-      if (!a || !b) return false;
-      if (a.length !== b.length) return false;
-      for (let r = 0; r < a.length; r++) {
-        if ((a[r] || []).length !== (b[r] || []).length) return false;
-      }
-      return true;
+      // lastCells 초기화
+      lastCells = Array.from({ length: bodyRowCount }, () => Array.from({ length: VIEW_COL_COUNT }, () => ""));
     }
 
     function flash(el) {
@@ -170,24 +151,40 @@
       setTimeout(() => el.classList.remove("changed"), 350);
     }
 
-    function updateCells(next) {
+    function applyUpdate(header, bodyRows, hiddenMask) {
+      // 헤더가 바뀌면(거의 없음) 헤더만 업데이트
+      if (!headerTexts) headerTexts = header.slice();
+
+      const theadRow = tableEl.tHead.rows[0];
+      for (let c = 0; c < VIEW_COL_COUNT; c++) {
+        const newH = header[c] ?? "";
+        if (theadRow.cells[c].textContent !== newH) {
+          theadRow.cells[c].textContent = newH;
+        }
+      }
+
       const tbody = tableEl.tBodies[0];
-      const nextBody = next.slice(1);
-      const prevBody = lastGoodMatrix.slice(1);
+      const n = fixedBodyRows;
 
-      for (let r = 0; r < nextBody.length; r++) {
+      for (let r = 0; r < n; r++) {
         const tr = tbody.rows[r];
-        if (!tr) continue;
 
-        for (let c = 0; c < nextBody[r].length; c++) {
+        // 숨김 처리 (삭제 X)
+        const shouldHide = !!hiddenMask[r];
+        if (shouldHide) tr.classList.add("hidden-row");
+        else tr.classList.remove("hidden-row");
+
+        // 데이터가 부족하면 빈칸 유지 (화면 흔들림 방지)
+        const row = bodyRows[r] || ["", "", "", ""];
+
+        for (let c = 0; c < VIEW_COL_COUNT; c++) {
           const td = tr.cells[c];
-          if (!td) continue;
-
-          const newVal = nextBody[r][c] ?? "";
-          const oldVal = prevBody[r]?.[c] ?? "";
+          const newVal = row[c] ?? "";
+          const oldVal = lastCells[r][c];
 
           if (newVal !== oldVal) {
             td.textContent = newVal;
+            lastCells[r][c] = newVal;
             flash(td);
           }
         }
@@ -201,42 +198,41 @@
 
         const text = await res.text();
         let matrix = parseCSVStable(text);
+
         if (!matrix) {
-          setErr("갱신 보류: CSV 대신 다른 응답(HTML/빈값)이 내려왔습니다.");
+          badCount++;
+          setErr("갱신 보류: 비정상 응답(HTML/빈값). 누적 " + badCount);
           return;
         }
 
-        // B~E 4칸만 유지 → 열 6 문제 해결
+        // B~E만 남기기 (열 흔들림 방지)
         matrix = sliceToViewCols(matrix);
 
-        // 총액~초기값 구간 숨김
-        matrix = filterVisibleRows(matrix);
+        const header = matrix[0];
+        const body = matrix.slice(1);
 
-        const v = validateMatrix(matrix);
-        if (!v.ok) {
-          setErr("갱신 보류: " + v.reason);
-          return;
+        // 첫 정상 수신 때 "고정 행 수"를 확정하고 테이블 뼈대 생성
+        if (!tableEl || fixedBodyRows === null) {
+          fixedBodyRows = body.length; // 처음 받은 본문 행 수로 고정
+          buildFixedTable(header, fixedBodyRows);
         }
 
+        // 숨길 구간 마스크 계산(삭제가 아니라 숨김)
+        // body가 더 짧게 들어오면 mask도 짧으니 fixedBodyRows 길이로 확장
+        const rawMask = computeHiddenBodyRowMask(body);
+        const hiddenMask = new Array(fixedBodyRows).fill(false);
+        for (let i = 0; i < Math.min(rawMask.length, fixedBodyRows); i++) hiddenMask[i] = rawMask[i];
+
+        badCount = 0;
         setErr("");
-        setMeta("정상 수신: 행 " + (matrix.length - 1) + " / 열 " + (matrix[0] ? matrix[0].length : 0));
+        const now = new Date();
+        setMeta("마지막 갱신: " + now.toLocaleString("ko-KR") + " (행 고정: " + fixedBodyRows + ")");
 
-        if (!tableEl || !lastGoodMatrix) {
-          buildTable(matrix);
-          lastGoodMatrix = matrix;
-          return;
-        }
-
-        if (!sameShape(matrix, lastGoodMatrix)) {
-          buildTable(matrix);
-          lastGoodMatrix = matrix;
-          return;
-        }
-
-        updateCells(matrix);
-        lastGoodMatrix = matrix;
+        // 업데이트(재구성 없이 셀만)
+        applyUpdate(header, body, hiddenMask);
       } catch (e) {
-        setErr("갱신 실패: " + (e?.message || e));
+        badCount++;
+        setErr("갱신 실패: " + (e?.message || e) + ". 누적 " + badCount);
       }
     }
 
