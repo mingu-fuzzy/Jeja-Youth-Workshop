@@ -29,11 +29,15 @@
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 
   <script>
-    const CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUs_ZDJTwEC_IJa43ej0BE_ICbuNM_5lTAi0Y8b_CjcCPtQHQt5_N9UC6RE6cX4md4xAp1pI3sbuOk/pub?gid=0&single=true&output=csv";
+    const CSV_URL =
+      "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUs_ZDJTwEC_IJa43ej0BE_ICbuNM_5lTAi0Y8b_CjcCPtQHQt5_N9UC6RE6cX4md4xAp1pI3sbuOk/pub?gid=0&single=true&output=csv";
+
     const POLL_MS = 5000;
 
-    // 숨김 필터 때문에 행이 줄 수 있으니 일단 아주 낮게
-    const MIN_BODY_ROWS = 1;
+    // CSV가 6열이든 10열이든 상관없이, 화면엔 "B~E"만 보여주기
+    // 0부터 세니까: A=0, B=1, C=2, D=3, E=4
+    const VIEW_COL_START = 1;
+    const VIEW_COL_COUNT = 4;
 
     let tableEl = null;
     let lastGoodMatrix = null;
@@ -62,10 +66,25 @@
       const data = parsed.data || [];
       if (!Array.isArray(data) || data.length < 2) return null;
 
+      // 2D 문자열 배열
       return data.map(row => (row || []).map(v => (v == null ? "" : String(v))));
     }
 
-    // "현재 총액" ~ "초기값" 구간 숨김
+    // 1) B~E 4칸만 남기기 (열 수 흔들림 해결)
+    function sliceToViewCols(matrix) {
+      if (!matrix || matrix.length === 0) return matrix;
+
+      const out = matrix.map(row => {
+        const r = row || [];
+        const sliced = r.slice(VIEW_COL_START, VIEW_COL_START + VIEW_COL_COUNT);
+        while (sliced.length < VIEW_COL_COUNT) sliced.push("");
+        return sliced;
+      });
+
+      return out;
+    }
+
+    // 2) "현재 총액" 행부터 "초기값" 행까지(포함) 숨김
     function filterVisibleRows(matrix) {
       if (!matrix || matrix.length <= 1) return matrix;
 
@@ -89,14 +108,16 @@
 
     function validateMatrix(matrix) {
       if (!matrix || matrix.length < 2) return { ok: false, reason: "데이터가 너무 짧습니다." };
-      const bodyRows = matrix.length - 1;
-      if (bodyRows < MIN_BODY_ROWS) return { ok: false, reason: "본문 행이 너무 적습니다." };
 
-      // 열 고정 검증은 일단 끔(여기서 막히는 경우가 너무 많음)
       const cols = (matrix[0] || []).length;
+      if (cols !== VIEW_COL_COUNT) {
+        return { ok: false, reason: "열 개수가 기대와 다릅니다. 현재 " + cols };
+      }
+
       for (let r = 0; r < matrix.length; r++) {
         if ((matrix[r] || []).length !== cols) return { ok: false, reason: "행마다 열 개수가 달라졌습니다." };
       }
+
       return { ok: true, reason: "" };
     }
 
@@ -185,7 +206,12 @@
           return;
         }
 
+        // B~E 4칸만 유지 → 열 6 문제 해결
+        matrix = sliceToViewCols(matrix);
+
+        // 총액~초기값 구간 숨김
         matrix = filterVisibleRows(matrix);
+
         const v = validateMatrix(matrix);
         if (!v.ok) {
           setErr("갱신 보류: " + v.reason);
