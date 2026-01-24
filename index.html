@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>PUBLIC 실시간 보드</title>
+  <title>PUBLIC 실시간 보드 (Web App JSON)</title>
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", sans-serif; margin: 0; padding: 16px; }
     .top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
     .meta { color: #666; font-size: 12px; }
-    .err { color: #b00020; font-size: 12px; }
-    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    .err { color: #b00020; font-size: 12px; white-space: pre-wrap; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; table-layout: fixed; }
     th, td { border: 1px solid #e5e5e5; padding: 10px 8px; text-align: center; }
     th { position: sticky; top: 0; background: #fff; z-index: 1; }
     .changed { outline: 2px solid #222; transition: outline 0.6s ease; }
@@ -27,89 +27,39 @@
 
   <div id="root"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-
   <script>
-    const CSV_URL =
-      "https://docs.google.com/spreadsheets/d/e/2PACX-1vTUs_ZDJTwEC_IJa43ej0BE_ICbuNM_5lTAi0Y8b_CjcCPtQHQt5_N9UC6RE6cX4md4xAp1pI3sbuOk/pub?gid=0&single=true&output=csv";
+    // --- Web App JSON API ---
+    const API_URL = "https://script.google.com/macros/s/AKfycbz66ZZz1niYcvTY8igZbSTj5AXypDUmTVUSq1mLdu7HlwOEzkPLmBffUiYwzFuEANKyLw/exec";
 
-    const POLL_MS = 5000;
+    // Apps Script에 넣어둔 WEB_API_TOKEN 값과 동일해야 합니다
+    // (사용자 스크립트 예시에서: mkws_2026_4pK9Qw7xV2nH8dR3aL1c)
+    const API_TOKEN = "mkws_2026_4pK9Qw7xV2nH8dR3aL1c";
 
-    // CSV가 몇 열이든 상관없이, 화면엔 B~E(4칸)만 보여줌
-    const VIEW_COL_START = 1; // A=0, B=1
-    const VIEW_COL_COUNT = 4;
+    // 2~5초 권장
+    const POLL_MS = 3000;
 
-    // 표가 너무 자주 흔들리면 5~8초로 늘리세요
-    // const POLL_MS = 7000;
+    // "현재 총액" 행부터 "초기값" 행까지 숨김(표에서 안 보이게)
+    const HIDE_FROM_TEXT = "현재";
+    const HIDE_FROM_TEXT2 = "총액";
+    const HIDE_TO_TEXT = "초기값";
 
     let tableEl = null;
-    let headerTexts = null;
-
-    // "표의 고정 뼈대"를 위해, 처음에 본문 행 수를 고정해둠
-    let fixedBodyRows = null;
-
-    // 마지막으로 반영된 값(셀 단위 비교용)
-    let lastCells = null;
-
+    let fixedRows = null;     // 첫 정상 응답의 rows.length로 고정
+    let lastCells = null;     // [r][c] 마지막 표시값
+    let fixedHideStart = null;
+    let fixedHideEnd = null;
     let timer = null;
     let badCount = 0;
-
-    function cacheBusted(url) {
-      const sep = url.includes("?") ? "&" : "?";
-      return url + sep + "t=" + Date.now();
-    }
 
     function setMeta(msg) { document.getElementById("meta").textContent = msg; }
     function setErr(msg) { document.getElementById("err").textContent = msg || ""; }
 
-    function looksLikeHtml(text) {
-      const head = (text || "").slice(0, 300).toLowerCase();
-      return head.includes("<html") || head.includes("<!doctype") || head.includes("<body");
+    function cacheBusted(url) {
+      const sep = url.includes("?") ? "&" : "?";
+      return url + sep + "token=" + encodeURIComponent(API_TOKEN) + "&t=" + Date.now();
     }
 
-    function parseCSVStable(text) {
-      if (!text) return null;
-      if (looksLikeHtml(text)) return null;
-
-      const parsed = Papa.parse(text, { skipEmptyLines: true });
-      if (parsed.errors && parsed.errors.length) return null;
-
-      const data = parsed.data || [];
-      if (!Array.isArray(data) || data.length < 2) return null;
-
-      return data.map(row => (row || []).map(v => (v == null ? "" : String(v))));
-    }
-
-    function sliceToViewCols(matrix) {
-      if (!matrix || matrix.length === 0) return matrix;
-      return matrix.map(row => {
-        const r = row || [];
-        const sliced = r.slice(VIEW_COL_START, VIEW_COL_START + VIEW_COL_COUNT);
-        while (sliced.length < VIEW_COL_COUNT) sliced.push("");
-        return sliced;
-      });
-    }
-
-    // "현재 총액~초기값" 구간을 '삭제'하지 말고, 숨길 row index 목록으로 만든다
-    function computeHiddenBodyRowMask(bodyRows) {
-      // bodyRows: [ [c1..c4], [..], ... ]
-      let hideStart = -1;
-      let hideEnd = -1;
-
-      for (let i = 0; i < bodyRows.length; i++) {
-        const joined = bodyRows[i].join(" ").trim();
-        if (hideStart === -1 && joined.includes("현재") && joined.includes("총액")) hideStart = i;
-        if (hideEnd === -1 && joined.includes("초기값")) hideEnd = i;
-      }
-
-      const mask = new Array(bodyRows.length).fill(false);
-      if (hideStart !== -1 && hideEnd !== -1 && hideStart <= hideEnd) {
-        for (let i = hideStart; i <= hideEnd; i++) mask[i] = true;
-      }
-      return mask;
-    }
-
-    function buildFixedTable(header, bodyRowCount) {
+    function buildFixedTable(header, rowCount) {
       const root = document.getElementById("root");
       root.innerHTML = "";
 
@@ -117,19 +67,17 @@
       const thead = document.createElement("thead");
       const tbody = document.createElement("tbody");
 
-      // header
       const trh = document.createElement("tr");
-      header.forEach(h => {
+      for (let c = 0; c < header.length; c++) {
         const th = document.createElement("th");
-        th.textContent = h;
+        th.textContent = header[c] ?? "";
         trh.appendChild(th);
-      });
+      }
       thead.appendChild(trh);
 
-      // fixed body rows
-      for (let r = 0; r < bodyRowCount; r++) {
+      for (let r = 0; r < rowCount; r++) {
         const tr = document.createElement("tr");
-        for (let c = 0; c < VIEW_COL_COUNT; c++) {
+        for (let c = 0; c < header.length; c++) {
           const td = document.createElement("td");
           td.textContent = "";
           tr.appendChild(td);
@@ -142,44 +90,58 @@
       root.appendChild(t);
       tableEl = t;
 
-      // lastCells 초기화
-      lastCells = Array.from({ length: bodyRowCount }, () => Array.from({ length: VIEW_COL_COUNT }, () => ""));
+      lastCells = Array.from({ length: rowCount }, () => Array.from({ length: header.length }, () => ""));
     }
 
     function flash(el) {
       el.classList.add("changed");
-      setTimeout(() => el.classList.remove("changed"), 350);
+      setTimeout(() => el.classList.remove("changed"), 300);
     }
 
-    function applyUpdate(header, bodyRows, hiddenMask) {
-      // 헤더가 바뀌면(거의 없음) 헤더만 업데이트
-      if (!headerTexts) headerTexts = header.slice();
+    function computeHideRangeOnce(rows) {
+      if (fixedHideStart !== null && fixedHideEnd !== null) return;
 
-      const theadRow = tableEl.tHead.rows[0];
-      for (let c = 0; c < VIEW_COL_COUNT; c++) {
-        const newH = header[c] ?? "";
-        if (theadRow.cells[c].textContent !== newH) {
-          theadRow.cells[c].textContent = newH;
+      for (let i = 0; i < rows.length; i++) {
+        const joined = (rows[i] || []).join(" ").trim();
+        if (fixedHideStart === null && joined.includes(HIDE_FROM_TEXT) && joined.includes(HIDE_FROM_TEXT2)) {
+          fixedHideStart = i;
+        }
+        if (fixedHideEnd === null && joined.includes(HIDE_TO_TEXT)) {
+          fixedHideEnd = i;
         }
       }
+    }
 
+    function rowShouldBeHidden(i) {
+      if (fixedHideStart === null || fixedHideEnd === null) return false;
+      if (fixedHideStart > fixedHideEnd) return false;
+      return i >= fixedHideStart && i <= fixedHideEnd;
+    }
+
+    function updateHeader(header) {
+      const trh = tableEl.tHead.rows[0];
+      for (let c = 0; c < header.length; c++) {
+        const newH = header[c] ?? "";
+        if (trh.cells[c].textContent !== newH) {
+          trh.cells[c].textContent = newH;
+        }
+      }
+    }
+
+    function updateRows(rows, colCount) {
       const tbody = tableEl.tBodies[0];
-      const n = fixedBodyRows;
 
-      for (let r = 0; r < n; r++) {
+      for (let r = 0; r < fixedRows; r++) {
         const tr = tbody.rows[r];
 
-        // 숨김 처리 (삭제 X)
-        const shouldHide = !!hiddenMask[r];
-        if (shouldHide) tr.classList.add("hidden-row");
+        // 숨김 처리(삭제 X)
+        if (rowShouldBeHidden(r)) tr.classList.add("hidden-row");
         else tr.classList.remove("hidden-row");
 
-        // 데이터가 부족하면 빈칸 유지 (화면 흔들림 방지)
-        const row = bodyRows[r] || ["", "", "", ""];
-
-        for (let c = 0; c < VIEW_COL_COUNT; c++) {
+        const row = rows[r] || [];
+        for (let c = 0; c < colCount; c++) {
           const td = tr.cells[c];
-          const newVal = row[c] ?? "";
+          const newVal = (row[c] ?? "").toString();
           const oldVal = lastCells[r][c];
 
           if (newVal !== oldVal) {
@@ -191,48 +153,65 @@
       }
     }
 
+    function isShapeStable(header, rows) {
+      if (!Array.isArray(header) || header.length === 0) return false;
+      if (!Array.isArray(rows)) return false;
+      for (let i = 0; i < rows.length; i++) {
+        if (!Array.isArray(rows[i])) return false;
+        if (rows[i].length !== header.length) return false;
+      }
+      return true;
+    }
+
     async function poll() {
       try {
-        const res = await fetch(cacheBusted(CSV_URL), { cache: "no-store" });
-        if (!res.ok) throw new Error("HTTP " + res.status);
+        const res = await fetch(cacheBusted(API_URL), { cache: "no-store" });
+        const json = await res.json();
 
-        const text = await res.text();
-        let matrix = parseCSVStable(text);
-
-        if (!matrix) {
+        if (!json || !json.ok) {
           badCount++;
-          setErr("갱신 보류: 비정상 응답(HTML/빈값). 누적 " + badCount);
+          setErr("API 오류: " + (json?.error || "unknown") + "\n누적: " + badCount);
           return;
         }
 
-        // B~E만 남기기 (열 흔들림 방지)
-        matrix = sliceToViewCols(matrix);
+        const header = (json.header || []).map(x => String(x ?? ""));
+        const rows = (json.rows || []).map(r => (r || []).map(x => String(x ?? "")));
 
-        const header = matrix[0];
-        const body = matrix.slice(1);
-
-        // 첫 정상 수신 때 "고정 행 수"를 확정하고 테이블 뼈대 생성
-        if (!tableEl || fixedBodyRows === null) {
-          fixedBodyRows = body.length; // 처음 받은 본문 행 수로 고정
-          buildFixedTable(header, fixedBodyRows);
+        if (!isShapeStable(header, rows)) {
+          badCount++;
+          setErr("형식 오류: header/rows 모양이 일정하지 않습니다.\n누적: " + badCount);
+          return;
         }
 
-        // 숨길 구간 마스크 계산(삭제가 아니라 숨김)
-        // body가 더 짧게 들어오면 mask도 짧으니 fixedBodyRows 길이로 확장
-        const rawMask = computeHiddenBodyRowMask(body);
-        const hiddenMask = new Array(fixedBodyRows).fill(false);
-        for (let i = 0; i < Math.min(rawMask.length, fixedBodyRows); i++) hiddenMask[i] = rawMask[i];
+        // 첫 정상 응답에서 표를 고정 생성 (이후 리로드/재구성 거의 없음)
+        if (!tableEl || fixedRows === null) {
+          fixedRows = rows.length;
+          buildFixedTable(header, fixedRows);
+        }
+
+        // 행 수가 갑자기 크게 줄어든 응답은 무시(부분 스냅샷 방지)
+        const minRows = Math.floor(fixedRows * 0.9);
+        if (rows.length < minRows) {
+          badCount++;
+          setErr("갱신 보류: 부분 데이터로 보입니다.\n받은 행: " + rows.length + " / 기대 행: " + fixedRows + "\n누적: " + badCount);
+          return;
+        }
+
+        // 숨김 구간은 한 번만 찾고 고정
+        computeHideRangeOnce(rows);
 
         badCount = 0;
         setErr("");
-        const now = new Date();
-        setMeta("마지막 갱신: " + now.toLocaleString("ko-KR") + " (행 고정: " + fixedBodyRows + ")");
 
-        // 업데이트(재구성 없이 셀만)
-        applyUpdate(header, body, hiddenMask);
+        // 표시 갱신 (헤더/셀만)
+        updateHeader(header);
+        updateRows(rows, header.length);
+
+        const stamp = json.updatedAt ? (" / 데이터: " + json.updatedAt) : "";
+        setMeta("마지막 갱신: " + new Date().toLocaleString("ko-KR") + stamp);
       } catch (e) {
         badCount++;
-        setErr("갱신 실패: " + (e?.message || e) + ". 누적 " + badCount);
+        setErr("갱신 실패: " + (e?.message || e) + "\n누적: " + badCount);
       }
     }
 
